@@ -1,0 +1,4 @@
+services:
+  sub2api-choujiang:
+    build: .
+    image: sub2api-choujiang:local

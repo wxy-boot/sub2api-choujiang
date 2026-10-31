@@ -1,0 +1,9 @@
+.DS_Store
+.env
+.idea/
+.vscode/
+data/*.json
+data/*.db
+data/*.db-*
+node_modules/
+npm-debug.log*

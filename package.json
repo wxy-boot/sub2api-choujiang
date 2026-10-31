@@ -1,0 +1,16 @@
+{
+  "name": "sub2api-choujiang",
+  "version": "0.1.0",
+  "description": "A SQLite-backed daily lucky wheel (spend-to-spin) service for Sub2API custom iframe tabs.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "start:env": "node --env-file=.env src/server.js",
+    "dev": "node --watch src/server.js",
+    "check": "node --check src/server.js && node --check src/pages.js && node --check src/store.js && node --check src/prizes.js && node --check src/config.js && node --check src/sub2api.js && node --check public/app.js && node --check public/admin.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

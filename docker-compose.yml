@@ -1,0 +1,15 @@
+services:
+  sub2api-choujiang:
+    # 把 your-github-name 换成你自己的 GitHub 用户名，或直接使用
+    # docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build 本地构建。
+    image: ghcr.io/your-github-name/sub2api-choujiang:latest
+    container_name: sub2api-choujiang
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8788:8788"
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

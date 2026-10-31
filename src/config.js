@@ -21,6 +21,31 @@ const requiredDailySpend = readFloatEnv(
   readFloatEnv("LOTTERY_DAILY_SPEND", 10)
 );
 
+// Sub2API 自带的批量用户用量接口。没有显式配置消费查询时直接用它，
+// 这样部署后无需额外配置就能按当天实际扣除金额判断门槛。
+const customSpendPath =
+  process.env.SUB2API_DAILY_SPEND_PATH_TEMPLATE ||
+  process.env.LOTTERY_DAILY_SPEND_PATH_TEMPLATE ||
+  "";
+const useBuiltinSpendEndpoint = !customSpendPath;
+
+// 如果消费查询没有自己的 token（例如只配置了 Admin API Key），
+// 鉴权头要跟随 Sub2API 管理端鉴权头，通常是 x-api-key；
+// 否则旧版 .env 里遗留的 Authorization 会把 Admin Key 当成 JWT 发出去。
+const explicitSpendAuthValue = firstUsableSecret(
+  process.env.SUB2API_DAILY_SPEND_AUTH_VALUE,
+  process.env.LOTTERY_DAILY_SPEND_AUTH_VALUE
+);
+const spendAuthValue =
+  explicitSpendAuthValue ||
+  firstUsableSecret(process.env.SUB2API_ADMIN_AUTH_VALUE, process.env.SUB2API_ADMIN_API_KEY);
+const spendAuthHeader = explicitSpendAuthValue
+  ? process.env.SUB2API_DAILY_SPEND_AUTH_HEADER ||
+    process.env.LOTTERY_DAILY_SPEND_AUTH_HEADER ||
+    process.env.SUB2API_ADMIN_AUTH_HEADER ||
+    "x-api-key"
+  : process.env.SUB2API_ADMIN_AUTH_HEADER || "x-api-key";
+
 export const config = {
   serviceName: "sub2api-choujiang",
   port: readIntEnv("PORT", 8788),
@@ -29,30 +54,29 @@ export const config = {
   authMePath: ensureLeadingSlash(process.env.SUB2API_AUTH_ME_PATH || "/api/v1/auth/me"),
   adminApiKey: process.env.SUB2API_ADMIN_API_KEY || "",
   adminAuthHeader: process.env.SUB2API_ADMIN_AUTH_HEADER || "x-api-key",
-  adminAuthValue: process.env.SUB2API_ADMIN_AUTH_VALUE || process.env.SUB2API_ADMIN_API_KEY || "",
+  adminAuthValue: firstUsableSecret(
+    process.env.SUB2API_ADMIN_AUTH_VALUE,
+    process.env.SUB2API_ADMIN_API_KEY
+  ),
   balancePathTemplate:
     process.env.SUB2API_BALANCE_PATH_TEMPLATE || "/api/v1/admin/users/{id}/balance",
   balanceOperation: process.env.SUB2API_BALANCE_OPERATION || "add",
   balanceAmountField: process.env.SUB2API_BALANCE_AMOUNT_FIELD || "balance",
   requireDailySpend: readBoolEnv("LOTTERY_REQUIRE_DAILY_SPEND", requiredDailySpend > 0),
   requiredDailySpend,
-  dailySpendAuthHeader:
-    process.env.SUB2API_DAILY_SPEND_AUTH_HEADER ||
-    process.env.LOTTERY_DAILY_SPEND_AUTH_HEADER ||
-    process.env.SUB2API_ADMIN_AUTH_HEADER ||
-    "x-api-key",
-  dailySpendAuthValue:
-    process.env.SUB2API_DAILY_SPEND_AUTH_VALUE ||
-    process.env.LOTTERY_DAILY_SPEND_AUTH_VALUE ||
-    process.env.SUB2API_ADMIN_AUTH_VALUE ||
-    process.env.SUB2API_ADMIN_API_KEY ||
-    "",
-  dailySpendPathTemplate:
-    process.env.SUB2API_DAILY_SPEND_PATH_TEMPLATE || process.env.LOTTERY_DAILY_SPEND_PATH_TEMPLATE || "",
+  dailySpendAuthHeader: spendAuthHeader,
+  dailySpendAuthValue: spendAuthValue,
+  dailySpendPathTemplate: customSpendPath || "/api/v1/admin/dashboard/users-usage",
   dailySpendBodyTemplate:
-    process.env.SUB2API_DAILY_SPEND_BODY_TEMPLATE || process.env.LOTTERY_DAILY_SPEND_BODY_TEMPLATE || "",
-  dailySpendMethod: (process.env.SUB2API_DAILY_SPEND_METHOD || "GET").toUpperCase(),
-  dailySpendAmountField: process.env.SUB2API_DAILY_SPEND_AMOUNT_FIELD || "",
+    process.env.SUB2API_DAILY_SPEND_BODY_TEMPLATE ||
+    process.env.LOTTERY_DAILY_SPEND_BODY_TEMPLATE ||
+    (useBuiltinSpendEndpoint ? '{"user_ids":[{id}]}' : ""),
+  dailySpendMethod: (
+    process.env.SUB2API_DAILY_SPEND_METHOD || (useBuiltinSpendEndpoint ? "POST" : "GET")
+  ).toUpperCase(),
+  dailySpendAmountField:
+    process.env.SUB2API_DAILY_SPEND_AMOUNT_FIELD ||
+    (useBuiltinSpendEndpoint ? "data.stats.{id}.today_actual_cost" : ""),
   unit: process.env.LOTTERY_UNIT || "USD",
   timezone: process.env.LOTTERY_TIMEZONE || "Asia/Shanghai",
   notePrefix: process.env.LOTTERY_NOTE_PREFIX || "Lucky wheel draw",
@@ -146,6 +170,33 @@ function splitCsv(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+// 忽略 .env.example 里的示例值，避免用户只改域名后把占位 token 发到 Sub2API。
+function usableSecret(value) {
+  const text = String(value || "").trim();
+
+  if (!text) {
+    return "";
+  }
+
+  if (/your-admin-token|your-admin-api-key|change-this/i.test(text)) {
+    return "";
+  }
+
+  return text;
+}
+
+function firstUsableSecret(...values) {
+  for (const value of values) {
+    const secret = usableSecret(value);
+
+    if (secret) {
+      return secret;
+    }
+  }
+
+  return "";
 }
 
 function trimTrailingSlash(value) {

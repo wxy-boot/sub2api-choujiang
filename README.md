@@ -109,7 +109,28 @@ LOTTERY_PRIZES=0.1:280:小确幸,0.2:220:小惊喜,0.3:160:好运到,0.5:120:幸
 | `SUB2API_BALANCE_OPERATION` | `add` | 接口语义，默认加余额 |
 | `SUB2API_BALANCE_AMOUNT_FIELD` | `balance` | 请求体金额字段名 |
 
-消费查询需要按你的 Sub2API 版本配置。支持以下占位符：
+消费查询默认使用 Sub2API 自带的批量用户用量接口，**通常不需要配置**：
+
+```text
+POST /api/v1/admin/dashboard/users-usage
+body: {"user_ids":[{id}]}
+读取: data.stats.{id}.today_actual_cost
+```
+
+鉴权默认复用 `SUB2API_ADMIN_API_KEY`，请求头为 `x-api-key`。这里的 Key 必须是 Sub2API 管理后台里的 **Admin API Key**，不是用户 API Key，也不是登录 JWT；否则会返回 401/403，页面提示“Sub2API 拒绝了消费查询”。
+
+只有你的 Sub2API 版本接口不同，才需要自定义以下变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SUB2API_DAILY_SPEND_METHOD` | `POST` | 消费查询方法 |
+| `SUB2API_DAILY_SPEND_PATH_TEMPLATE` | `/api/v1/admin/dashboard/users-usage` | 消费查询路径 |
+| `SUB2API_DAILY_SPEND_BODY_TEMPLATE` | `{"user_ids":[{id}]}` | 请求体模板 |
+| `SUB2API_DAILY_SPEND_AMOUNT_FIELD` | `data.stats.{id}.today_actual_cost` | 金额字段路径 |
+| `SUB2API_DAILY_SPEND_AUTH_HEADER` | `x-api-key` | 鉴权头 |
+| `SUB2API_DAILY_SPEND_AUTH_VALUE` | 空（回退到 Admin API Key） | 鉴权值 |
+
+自定义查询支持以下占位符：
 
 ```text
 {id} {userId} {user_id}          用户 ID
@@ -121,31 +142,21 @@ LOTTERY_PRIZES=0.1:280:小确幸,0.2:220:小惊喜,0.3:160:好运到,0.5:120:幸
 {start_ms} {end_ms}              毫秒级时间戳
 ```
 
-GET 示例：
+自定义 GET 示例：
 
 ```dotenv
 SUB2API_DAILY_SPEND_METHOD=GET
 SUB2API_DAILY_SPEND_PATH_TEMPLATE=/api/v1/admin/users/{id}/usage?date={date}
+SUB2API_DAILY_SPEND_BODY_TEMPLATE=
 SUB2API_DAILY_SPEND_AMOUNT_FIELD=data.today_cost
 ```
 
-POST 示例（金额字段可用 `{id}` 定位到当前用户）：
-
-```dotenv
-SUB2API_DAILY_SPEND_METHOD=POST
-SUB2API_DAILY_SPEND_PATH_TEMPLATE=/api/v1/admin/dashboard/users-usage
-SUB2API_DAILY_SPEND_BODY_TEMPLATE={"user_ids":[{id}]}
-SUB2API_DAILY_SPEND_AMOUNT_FIELD=data.stats.{id}.today_actual_cost
-```
-
-鉴权：
+自定义鉴权示例（一般不需要）：
 
 ```dotenv
 SUB2API_DAILY_SPEND_AUTH_HEADER=Authorization
 SUB2API_DAILY_SPEND_AUTH_VALUE=Bearer your-admin-token
 ```
-
-不配置 `SUB2API_DAILY_SPEND_PATH_TEMPLATE` 时，管理后台会提示消费查询未配置，用户侧无法通过门槛校验。
 
 ## 生产部署
 
@@ -175,6 +186,17 @@ SUB2API_ADMIN_API_KEY=你的-sub2api-admin-api-key
 LOTTERY_ADMIN_PASSWORD=换成一个强密码
 LOTTERY_TIMEZONE=Asia/Shanghai
 ```
+
+这里的 `SUB2API_ADMIN_API_KEY` 必须是 Sub2API 管理后台的 **Admin API Key**。余额发放和消费查询都会用它；消费查询默认走：
+
+```text
+POST /api/v1/admin/dashboard/users-usage
+x-api-key: <Admin API Key>
+body: {"user_ids":[<用户ID>]}
+读取: data.stats.<用户ID>.today_actual_cost
+```
+
+所以正常情况下**不需要**再配 `SUB2API_DAILY_SPEND_*`。
 
 `SUB2API_BASE_URL` 的选择：
 
@@ -285,6 +307,14 @@ docker compose up -d
 docker logs -f sub2api-choujiang
 ```
 
+如果镜像是本地构建的，改用：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+> 旧版 `.env` 里的 `Authorization: Bearer your-admin-token` 会被新版本自动忽略，并回退到 `SUB2API_ADMIN_API_KEY` + `x-api-key`；改完代码重启即可，不必手动删配置。
+
 ### 7. 备份与恢复
 
 ```bash
@@ -358,7 +388,13 @@ echo <你的-github-token> | docker login ghcr.io -u <你的-github-用户名> -
 
 **显示消费金额查询失败**
 
-检查 `SUB2API_DAILY_SPEND_*` 配置、管理端系统信息页的“消费查询”检查项，以及 Sub2API 管理员 Key 是否有权限。接口返回结构变化时，调整 `SUB2API_DAILY_SPEND_AMOUNT_FIELD`。
+页面会给出具体原因：
+
+- “Sub2API 拒绝了消费查询” → `SUB2API_ADMIN_API_KEY` 不是管理后台的 Admin API Key，或 `.env` 里仍残留 `Authorization: Bearer your-admin-token`。新版会自动忽略占位值并改用 `x-api-key`，升级后重启即可。
+- “没有找到消费查询接口（404）” → 自定义的 `SUB2API_DAILY_SPEND_PATH_TEMPLATE` 与 Sub2API 版本不匹配，删除自定义配置或改成 `/api/v1/admin/dashboard/users-usage`。
+- “无法从 Sub2API 响应解析今日消费金额” → 接口返回结构不同，调整 `SUB2API_DAILY_SPEND_AMOUNT_FIELD`；服务端日志里会打印实际响应。
+
+也可以在管理后台“系统信息”里核对消费查询方法、鉴权头、接口模板和金额字段。
 
 **抽奖成功但余额没到账**
 

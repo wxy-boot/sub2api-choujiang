@@ -256,9 +256,35 @@ export function createSub2api(config) {
         userId: String(userId),
         date,
         status: upstream.status,
+        url,
+        method,
         body: upstream.body
       });
-      throw httpError(502, "daily_spend_query_failed", "Sub2API 今日消费查询失败。");
+
+      if (upstream.status === 401 || upstream.status === 403) {
+        throw httpError(
+          502,
+          "daily_spend_unauthorized",
+          "Sub2API 拒绝了消费查询：请确认 SUB2API_ADMIN_API_KEY 填的是管理后台的 Admin API Key，且消费查询鉴权头为 x-api-key。",
+          { upstreamStatus: upstream.status }
+        );
+      }
+
+      if (upstream.status === 404) {
+        throw httpError(
+          502,
+          "daily_spend_endpoint_not_found",
+          "Sub2API 没有找到消费查询接口（404）：请检查 SUB2API_DAILY_SPEND_PATH_TEMPLATE 是否与当前 Sub2API 版本一致。",
+          { upstreamStatus: upstream.status }
+        );
+      }
+
+      throw httpError(
+        502,
+        "daily_spend_query_failed",
+        `Sub2API 今日消费查询失败（HTTP ${upstream.status}）。`,
+        { upstreamStatus: upstream.status }
+      );
     }
 
     return extractDailySpendAmount(upstream.body, userId, date);
@@ -324,8 +350,26 @@ export function createSub2api(config) {
     const amountField = config.dailySpendAmountField
       ? renderDailySpendTemplate(config.dailySpendAmountField, userId, date, { encodeValues: false })
       : "";
-    const rawAmount = amountField ? valueAtPath(payload, amountField) : autoDetectSpendAmount(payload, userId);
-    const amount = normalizeSpendAmount(rawAmount);
+    let rawAmount = amountField ? valueAtPath(payload, amountField) : undefined;
+    let amount = normalizeSpendAmount(rawAmount);
+
+    if (!Number.isFinite(amount)) {
+      const batchAmount = extractBatchUsageAmount(payload, userId);
+
+      if (Number.isFinite(batchAmount)) {
+        amount = batchAmount;
+        rawAmount = batchAmount;
+      }
+    }
+
+    if (!Number.isFinite(amount)) {
+      const detected = autoDetectSpendAmount(payload, userId);
+
+      if (Number.isFinite(detected)) {
+        amount = detected;
+        rawAmount = detected;
+      }
+    }
 
     if (!Number.isFinite(amount)) {
       logError("sub2api.daily_spend.unrecognized", {
@@ -367,6 +411,62 @@ export function createSub2api(config) {
     fetchDailySpendAmount,
     probe
   };
+}
+
+function extractBatchUsageAmount(payload, userId) {
+  const userIdText = String(userId || "");
+  const roots = [
+    payload?.data?.stats,
+    payload?.stats,
+    payload?.data?.users,
+    payload?.users,
+    payload?.data,
+    payload
+  ];
+
+  for (const root of roots) {
+    if (!root || typeof root !== "object") {
+      continue;
+    }
+
+    let entries = [];
+
+    if (Array.isArray(root)) {
+      entries = root;
+    } else if (userIdText && root[userIdText] != null) {
+      entries = [root[userIdText]];
+    } else {
+      entries = Object.values(root).filter((item) => item && typeof item === "object");
+    }
+
+    for (const entry of entries) {
+      if (entry == null || typeof entry !== "object") {
+        continue;
+      }
+
+      const entryUserId = String(entry.user_id ?? entry.userId ?? entry.id ?? "");
+
+      if (entryUserId && userIdText && entryUserId !== userIdText) {
+        continue;
+      }
+
+      for (const field of [
+        "today_actual_cost",
+        "todayActualCost",
+        "today_cost",
+        "todayCost",
+        "actual_cost"
+      ]) {
+        const amount = normalizeSpendAmount(entry[field], { allowArray: false });
+
+        if (Number.isFinite(amount)) {
+          return amount;
+        }
+      }
+    }
+  }
+
+  return NaN;
 }
 
 function autoDetectSpendAmount(payload, userId = "") {

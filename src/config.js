@@ -82,6 +82,8 @@ export const config = {
   notePrefix: process.env.LOTTERY_NOTE_PREFIX || "Lucky wheel draw",
   showProbability: readBoolEnv("LOTTERY_SHOW_PROBABILITY", false),
   adminPassword: process.env.LOTTERY_ADMIN_PASSWORD || "",
+  // 机器人接口（AstrBot 插件等）共享密钥；为空时接口返回 bot_disabled。
+  botSharedSecret: process.env.BOT_SHARED_SECRET || "",
   dbFile: path.resolve(
     rootDir,
     process.env.LOTTERY_DB_FILE || process.env.SQLITE_FILE || "./data/lottery.db"

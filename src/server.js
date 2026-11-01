@@ -100,6 +100,12 @@ server.listen(config.port, () => {
     });
   }
 
+  if (!config.botSharedSecret) {
+    logWarn("config.missing_bot_shared_secret", {
+      message: "BOT_SHARED_SECRET is empty; bot APIs return bot_disabled."
+    });
+  }
+
   void sub2api.probe();
 });
 
@@ -165,6 +171,11 @@ async function route(req, res) {
       showProbability,
       tokenStorageKeys: config.publicTokenStorageKeys
     });
+    return;
+  }
+
+  if (routePath === "/api/bot/draw" || routePath === "/api/bot/status") {
+    await handleBotRequest(req, res, routePath, method, url);
     return;
   }
 
@@ -272,6 +283,147 @@ async function route(req, res) {
   }
 
   sendJson(res, 404, { ok: false, error: "not_found" });
+}
+
+async function handleBotRequest(req, res, routePath, method, url) {
+  requireBot(req);
+
+  if (routePath === "/api/bot/draw") {
+    if (method !== "POST") {
+      throw httpError(405, "method_not_allowed", "机器人抽奖接口只接受 POST 请求。");
+    }
+
+    const body = await readJsonBody(req);
+    const user = resolveBotUser(body?.userId, body?.userName);
+    let result;
+
+    try {
+      result = await performDraw(user);
+    } catch (error) {
+      throw normalizeBotError(error, user);
+    }
+
+    logInfo("bot.draw", {
+      source: "bot",
+      userId: user.id,
+      date: result.date,
+      alreadyDrawn: Boolean(result.alreadyDrawn),
+      prizeLabel: result.prize?.label || "",
+      amount: result.prize?.amount ?? null,
+      unit: config.unit
+    });
+
+    sendJson(res, 200, toBotDrawPayload(result));
+    return;
+  }
+
+  if (method !== "GET") {
+    throw httpError(405, "method_not_allowed", "机器人状态接口只接受 GET 请求。");
+  }
+
+  const user = resolveBotUser(url.searchParams.get("userId"), url.searchParams.get("userName"));
+  const date = dateKey(new Date(), config.timezone);
+  const draw = store.findDraw(user.id, date);
+  const eligibility = await resolveEligibility(user, date, { strict: false });
+
+  logInfo("bot.status", {
+    source: "bot",
+    userId: user.id,
+    date,
+    drawn: Boolean(draw)
+  });
+
+  sendJson(res, 200, {
+    ok: true,
+    date,
+    unit: config.unit,
+    drawn: Boolean(draw),
+    draw: draw ? publicDraw(draw) : null,
+    quota: quotaPayload(date, Boolean(draw)),
+    eligibility
+  });
+}
+
+function requireBot(req) {
+  if (!config.botSharedSecret) {
+    throw httpError(403, "bot_disabled", "机器人接口未启用，请先在服务端配置 BOT_SHARED_SECRET。");
+  }
+
+  const provided = String(req.headers["x-bot-secret"] || "").trim();
+
+  if (!provided || !safeEqual(provided, config.botSharedSecret)) {
+    throw httpError(401, "invalid_bot_secret", "机器人密钥错误。");
+  }
+}
+
+function resolveBotUser(userId, userName) {
+  const id = String(userId ?? "").trim();
+
+  if (!id) {
+    throw httpError(400, "invalid_user_id", "缺少 userId。");
+  }
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$/.test(id)) {
+    throw httpError(400, "invalid_user_id", "userId 格式不合法。");
+  }
+
+  return {
+    id,
+    name: cleanDisplayName(userName),
+    email: "",
+    balance: null
+  };
+}
+
+function cleanDisplayName(value) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function toBotDrawPayload(result) {
+  const { user: _ignored, ...payload } = result;
+
+  return payload;
+}
+
+const BOT_ERROR_CODES = new Set([
+  "invalid_user_id",
+  "invalid_bot_secret",
+  "bot_disabled",
+  "daily_spend_not_enough",
+  "user_not_found",
+  "compliance_required",
+  "upstream_error",
+  "upstream_timeout",
+  "internal_error",
+  "method_not_allowed"
+]);
+
+// 机器人接口只暴露文档约定的错误码：其余上游错误统一收敛为 502/504。
+function normalizeBotError(error, user) {
+  if (error?.status && BOT_ERROR_CODES.has(error.code)) {
+    return error;
+  }
+
+  const status = Number(error?.status) || 500;
+  const eligibility = error?.details?.eligibility;
+  const details = eligibility ? { eligibility } : {};
+
+  logError("bot.upstream_error", {
+    source: "bot",
+    userId: user?.id ? String(user.id) : "",
+    status,
+    code: error?.code || "",
+    message: error?.message || ""
+  });
+
+  if (status === 504) {
+    return httpError(504, "upstream_timeout", "Sub2API 响应超时，请稍后再试。", details);
+  }
+
+  return httpError(502, "upstream_error", "上游服务异常，请稍后再试。", details);
 }
 
 async function performDraw(user) {

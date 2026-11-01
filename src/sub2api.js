@@ -227,6 +227,15 @@ export function createSub2api(config) {
         status: upstream.status,
         body: upstream.body
       });
+
+      if (upstream.status === 404) {
+        throw httpError(404, "user_not_found", "Sub2API 用户不存在。");
+      }
+
+      if (upstream.status === 423) {
+        throw httpError(423, "compliance_required", "站点管理员尚未完成合规确认。");
+      }
+
       throw httpError(502, "balance_update_failed", "Sub2API 余额发放失败，请稍后再试。");
     }
 

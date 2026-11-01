@@ -365,8 +365,120 @@ echo <你的-github-token> | docker login ghcr.io -u <你的-github-用户名> -
 | POST | `/api/draw` | Sub2API 登录态 | 抽奖；已抽过返回 `alreadyDrawn: true` |
 | GET | `/api/admin/config` | 管理密码 | 管理端完整配置、统计、最近记录 |
 | PUT | `/api/admin/config` | 管理密码 | 保存奖品、门槛、备注前缀、概率开关 |
+| POST | `/api/bot/draw` | `X-Bot-Secret` | 机器人抽奖；已抽过返回 `alreadyDrawn: true` |
+| GET | `/api/bot/status?userId=42` | `X-Bot-Secret` | 机器人查询今日抽奖状态、剩余次数、资格 |
 
 管理密码请求头：`X-Lottery-Admin-Password`，也兼容 `Authorization: Bearer <password>` 和 Basic Auth。
+
+## 机器人接口（QQ 机器人 / AstrBot 插件）
+
+`/api/bot/*` 不经过 Sub2API 用户登录，只认共享密钥，供 QQ 机器人 / AstrBot 插件调用。配套插件：[astrbot_plugin_sub2api_qqbot](https://github.com/wxy-boot/astrbot-plugin-qqbot)。
+
+配置：
+
+```dotenv
+# 与 sub2api-qiandao 使用同一个值
+BOT_SHARED_SECRET=用 openssl rand -hex 32 生成
+```
+
+- 为空时接口返回 `403 bot_disabled`，浏览器侧抽奖不受影响。
+- 密钥通过 `X-Bot-Secret` 头传递，服务端使用常量时间比较。
+- 这两个接口**只监听内网/容器网络**；如需暴露公网，必须在反向代理再加一层限制。
+
+### 抽奖
+
+```http
+POST {PUBLIC_BASE_PATH}/api/bot/draw
+Content-Type: application/json
+X-Bot-Secret: <secret>
+
+{"userId":"42","userName":"alice"}
+```
+
+```json
+{
+  "ok": true,
+  "date": "2026-11-01",
+  "unit": "USD",
+  "alreadyDrawn": false,
+  "prize": { "id": "prize-5", "label": "小锦鲤", "amount": 0.8, "color": "#f59e0b" },
+  "prizeIndex": 4,
+  "draw": {
+    "date": "2026-11-01",
+    "prizeId": "prize-5",
+    "prizeLabel": "小锦鲤",
+    "amount": 0.8,
+    "unit": "USD",
+    "spendAmount": 12.34,
+    "note": "Lucky wheel draw 2026-11-01 小锦鲤 0.8 USD",
+    "createdAt": "2026-11-01T02:00:00.000Z"
+  },
+  "quota": {
+    "limit": 1,
+    "used": 1,
+    "remaining": 0,
+    "resetDate": "2026-11-02",
+    "resetAt": "2026-11-02T00:00:00.000+08:00"
+  },
+  "eligibility": {
+    "enabled": true,
+    "requiredAmount": 10,
+    "currentAmount": 12.34,
+    "remainingAmount": 0,
+    "unit": "USD",
+    "timezone": "Asia/Shanghai",
+    "eligible": true
+  }
+}
+```
+
+已抽过时返回 `alreadyDrawn: true`，并带上当天的 `prize` / `draw`，不会重复发奖。
+
+### 状态
+
+```http
+GET {PUBLIC_BASE_PATH}/api/bot/status?userId=42
+X-Bot-Secret: <secret>
+```
+
+```json
+{
+  "ok": true,
+  "date": "2026-11-01",
+  "unit": "USD",
+  "drawn": false,
+  "draw": null,
+  "quota": { "limit": 1, "used": 0, "remaining": 1, "resetDate": "2026-11-02", "resetAt": "2026-11-02T00:00:00.000+08:00" },
+  "eligibility": { "enabled": false, "requiredAmount": 0, "currentAmount": null, "remainingAmount": 0, "unit": "USD", "timezone": "Asia/Shanghai", "eligible": true }
+}
+```
+
+### 错误码
+
+| HTTP | `error` | 说明 |
+| --- | --- | --- |
+| 400 | `invalid_user_id` | `userId` 缺失或格式不合法 |
+| 401 | `invalid_bot_secret` | 密钥错误 |
+| 403 | `bot_disabled` | 未配置 `BOT_SHARED_SECRET` |
+| 403 | `daily_spend_not_enough` | 已开启门槛且当天消费不足（带 `eligibility`） |
+| 404 | `user_not_found` | Sub2API 用户不存在 |
+| 405 | `method_not_allowed` | 请求方法不对 |
+| 423 | `compliance_required` | Sub2API 要求管理员先完成合规确认 |
+| 502 | `upstream_error` | Sub2API 返回异常（含发奖失败） |
+| 504 | `upstream_timeout` | Sub2API 超时 |
+
+错误响应统一为 `{"ok": false, "error": "...", "message": "..."}`，能带 `eligibility` 的会一并带上。
+
+> 门槛只由本服务自己的设置决定（后台的 `spend_enabled` / `spend_required_amount`），机器人接口不接受门槛参数，也无法绕过。
+
+自测：
+
+```bash
+curl -s -X POST http://127.0.0.1:8788/choujiang/api/bot/draw \
+  -H "X-Bot-Secret: $BOT_SHARED_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"42","userName":"alice"}'
+```
 
 ## 日志
 
@@ -375,6 +487,7 @@ echo <你的-github-token> | docker login ghcr.io -u <你的-github-用户名> -
 - `service.started`：启动配置（不含密钥）
 - `sub2api.user.verified`：用户身份校验成功
 - `draw.success` / `draw.duplicate` / `draw.spend_not_enough`
+- `bot.draw` / `bot.status` / `bot.upstream_error`：机器人接口调用（带 `source:"bot"` 与 `userId`，不含密钥）
 - `admin.config.updated`
 - `request.error`：未捕获异常
 
@@ -412,6 +525,7 @@ echo <你的-github-token> | docker login ghcr.io -u <你的-github-用户名> -
 
 ```bash
 npm run check   # 语法检查
+npm run test    # node:test，会临时启动服务与模拟 Sub2API
 npm run dev     # node --watch
 ```
 

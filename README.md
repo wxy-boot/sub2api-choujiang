@@ -51,6 +51,13 @@ cp .env.example .env
 npm run start:env
 ```
 
+或者直接用 Docker（远程镜像，服务器不需要装 Node.js）：
+
+```bash
+cp .env.example .env && mkdir -p data
+docker compose pull && docker compose up -d
+```
+
 打开：
 
 - 用户页：`http://127.0.0.1:8788/choujiang/`
@@ -172,7 +179,7 @@ SUB2API_DAILY_SPEND_AUTH_VALUE=Bearer your-admin-token
 ### 1. 准备目录与配置
 
 ```bash
-git clone https://github.com/your-github-name/sub2api-choujiang.git
+git clone https://github.com/wxy-boot/sub2api-choujiang.git
 cd sub2api-choujiang
 cp .env.example .env
 mkdir -p data
@@ -209,15 +216,46 @@ body: {"user_ids":[<用户ID>]}
 
 ### 2. 启动
 
-使用已发布的镜像（把 `your-github-name` 换成实际用户名）：
+两种方式二选一，`docker-compose.yml` 默认使用远程镜像。
+
+#### 方式 A：使用远程镜像（推荐）
+
+仓库推送后会由 GitHub Actions 自动构建多架构镜像并发布到 GitHub Container Registry，服务器上**不需要 Node.js、不需要 git**，只要 Docker：
 
 ```bash
+# 1. 只需要这三个文件
+wget https://raw.githubusercontent.com/wxy-boot/sub2api-choujiang/master/docker-compose.yml
+wget https://raw.githubusercontent.com/wxy-boot/sub2api-choujiang/master/.env.example -O .env
+mkdir -p data
+
+# 2. 编辑 .env（见上一步）
+
+# 3. 拉镜像并启动
 docker compose pull
 docker compose up -d
 docker logs -f sub2api-choujiang
 ```
 
-或本地构建：
+镜像地址（已写在 `docker-compose.yml` 里）：
+
+```text
+ghcr.io/wxy-boot/sub2api-choujiang:latest            最新构建
+ghcr.io/wxy-boot/sub2api-choujiang:sha-<7位提交号>   固定到某个提交
+ghcr.io/wxy-boot/sub2api-choujiang:<标签名>          固定到某个 tag
+```
+
+- 该包是**公开**的，`docker pull` 不需要登录 GitHub。
+- 想固定版本、避免 `latest` 漂移，把 compose 里的 `:latest` 换成 `:sha-0a37541` 这类 sha 标签即可。
+- 如果以后把包改成 Private，服务器需要先登录一次：
+  ```bash
+  echo "你的-PAT" | docker login ghcr.io -u wxy-boot --password-stdin
+  ```
+  PAT 需要勾选 `read:packages`。
+- 国内服务器拉取 ghcr.io 慢或失败，可以给 Docker 配置镜像加速，或改用方式 B 本地构建。
+
+#### 方式 B：本地构建
+
+已经有源码目录、或想自己改代码时用：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
@@ -301,17 +339,23 @@ https://你的-sub2api-域名/choujiang/admin/
 
 ### 6. 更新版本
 
+远程镜像：
+
 ```bash
+git pull                # 若改了 compose/.env 模板才需要
 docker compose pull
 docker compose up -d
-docker logs -f sub2api-choujiang
+docker logs --tail 50 sub2api-choujiang
 ```
 
-如果镜像是本地构建的，改用：
+本地构建：
 
 ```bash
+git pull
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
+
+更新不会重建数据库，`./data/lottery.db` 原样保留；后台里设置的门槛和奖池也不会被覆盖（只有空键才会写入默认值）。
 
 > 旧版 `.env` 里的 `Authorization: Bearer your-admin-token` 会被新版本自动忽略，并回退到 `SUB2API_ADMIN_API_KEY` + `x-api-key`；改完代码重启即可，不必手动删配置。
 
@@ -331,15 +375,25 @@ docker compose start sub2api-choujiang
 仓库包含 `.github/workflows/docker-publish.yml`。推送到 `master` / `main` 分支或推送 `v*` tag 时，GitHub Actions 会构建 `linux/amd64`、`linux/arm64` 多架构镜像并推送到：
 
 ```text
-ghcr.io/<你的-github-用户名>/sub2api-choujiang:latest
-ghcr.io/<你的-github-用户名>/sub2api-choujiang:<tag>
-ghcr.io/<你的-github-用户名>/sub2api-choujiang:sha-<commit>
+ghcr.io/wxy-boot/sub2api-choujiang:latest
+ghcr.io/wxy-boot/sub2api-choujiang:master
+ghcr.io/wxy-boot/sub2api-choujiang:<tag>
+ghcr.io/wxy-boot/sub2api-choujiang:sha-<commit>
 ```
 
-发布前把 `docker-compose.yml` 里的 `image` 改成同一路径。首次使用 GHCR 时，如果服务器拉取镜像提示无权限，先执行：
+`docker-compose.yml` 里的 `image` 已经是这个地址，`docker compose pull` 即可拉到最新构建。
+
+查看某个 tag 对应的提交：GitHub → 仓库右侧 **Packages** → `sub2api-choujiang`，或直接看 Actions 运行记录。服务器上也可以核对：
 
 ```bash
-echo <你的-github-token> | docker login ghcr.io -u <你的-github-用户名> --password-stdin
+docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+  ghcr.io/wxy-boot/sub2api-choujiang:latest
+```
+
+首次使用 GHCR 时，如果服务器拉取镜像提示无权限，先执行（公开包不需要）：
+
+```bash
+echo <你的-github-token> | docker login ghcr.io -u wxy-boot --password-stdin
 ```
 
 ## 管理后台
